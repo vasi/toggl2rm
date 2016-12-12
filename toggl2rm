@@ -90,7 +90,7 @@ end
 
 def issue_number(entry)
   # Look for '#12345'
-  /#(\d{5,})/.match(entry.description) ? $1.to_i : nil
+  /#(\d{1,})/.match(entry.description) ? $1.to_i : nil
 end
 
 def toggl2rm(toggl_token, rm_url, rm_token, date)
