@@ -76,7 +76,7 @@ def rm_add_time(host, token, issue, date, hours, comments)
   rm(host, token, '/time_entries.json', {
     'time_entry' => {
       'issue_id' => issue.to_i,
-      # 'spent_on' => date,
+      'spent_on' => date,
       'hours' => hours,
       'comments' => comments
     }
