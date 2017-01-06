@@ -111,7 +111,7 @@ class Toggl2RM
     entries.each do |entry|
       next unless entry.hours > 0
       issue = issue_number(entry) or next
-      puts "Adding %.2f hours for %s" % [entry.hours, issue]
+      puts "Adding %.2f hours on %s for %s" % [entry.hours, @date, issue]
       rm_add_time(issue, entry.hours, entry.description)
     end
   end
