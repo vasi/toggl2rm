@@ -7,100 +7,113 @@ require 'optparse'
 require 'ostruct'
 require 'pp'
 
-def req(url, method = :Get)
-  uri = URI(url) unless URI === uri
-
-  @https ||= {}
-  http = @https[uri.host] ||= begin
-    http = Net::HTTP.new(uri.host, uri.port)
-    http.use_ssl = uri.scheme == 'https'
-    http.verify_mode = OpenSSL::SSL::VERIFY_NONE
-    http
+class Toggl2RM
+  def initialize(opts)
+    @toggl_token = opts[:toggl_token]
+    @rm_token = opts[:rm_token]
+    @rm_url = opts[:rm_url]
+    @date = opts[:date]
+    @debug = opts[:debug]
   end
 
-  req = Net::HTTP.const_get(method).new(uri)
-  yield req if block_given?
+  def req(url, method = :Get)
+    uri = URI(url) unless URI === uri
 
-  resp = http.request(req)
-  raise resp.message unless Net::HTTPSuccess === resp
-  resp.body
-end
-
-def toggl(token, path, method: :Get, query: nil)
-  uri = URI('https://www.toggl.com/' + path)
-  uri.query = URI.encode_www_form(query) if query
-  body = req(uri, method) do |req|
-    req.basic_auth token, 'api_token'
-  end
-  JSON.parse(body)
-end
-
-def toggl_workspaces(token)
-  toggl(token, 'api/v8/workspaces')
-end
-
-class Entry < Struct.new(:project, :description, :ms)
-  def hours; (ms.to_f / 1000 / 60 / 60).round(2); end
-end
-
-def toggl_entries(token, workspace, date)
-  entries = []
-  1.upto(Float::INFINITY) do |page|
-    resp = toggl token, 'reports/api/v2/details', query: {
-      'user_agent' => 'toggl2rm',
-      'workspace_id' => workspace,
-      'since' => date,
-      'until' => date,
-      'page' => page,
-    }
-    break if resp['data'].empty?
-    entries += resp['data'].map do |entry|
-      Entry.new(entry['project'], entry['description'], entry['dur'])
+    @https ||= {}
+    http = @https[uri.host] ||= begin
+      http = Net::HTTP.new(uri.host, uri.port)
+      http.set_debug_output($stderr) if @debug
+      http.use_ssl = uri.scheme == 'https'
+      http.verify_mode = OpenSSL::SSL::VERIFY_NONE
+      http
     end
-  end
-  entries
-end
 
-def rm(host, token, path, data = nil)
-  body = req(host + path, data ? :Post : :Get) do |req|
-    req.basic_auth token, 'none'
-    if data
-      req['Content-Type'] = 'application/json'
-      req.body = JSON.dump(data)
+    req = Net::HTTP.const_get(method).new(uri)
+    yield req if block_given?
+
+    resp = http.request(req)
+    raise resp.message unless Net::HTTPSuccess === resp
+    resp.body
+  end
+
+  def toggl(path, method: :Get, query: nil)
+    uri = URI('https://www.toggl.com/' + path)
+    uri.query = URI.encode_www_form(query) if query
+    body = req(uri, method) do |req|
+      req.basic_auth @toggl_token, 'api_token'
     end
+    JSON.parse(body)
   end
-  JSON.parse(body)
-end
 
-def rm_add_time(host, token, issue, date, hours, comments)
-  rm(host, token, '/time_entries.json', {
-    'time_entry' => {
-      'issue_id' => issue.to_i,
-      'spent_on' => date,
-      'hours' => hours,
-      'comments' => comments
-    }
-  })
-end
+  def rm(path, data = nil)
+    body = req(@rm_url + path, data ? :Post : :Get) do |req|
+      req.basic_auth @rm_token, 'none'
+      if data
+        req['Content-Type'] = 'application/json'
+        req.body = JSON.dump(data)
+      end
+    end
+    JSON.parse(body)
+  end
 
-def choose_workspace(token)
-  # For now just pick the first one
-  toggl_workspaces(token).first['id']
-end
 
-def issue_number(entry)
-  # Look for '#12345'
-  /#(\d{1,})/.match(entry.description) ? $1.to_i : nil
-end
+  def toggl_workspaces
+    toggl('api/v8/workspaces')
+  end
 
-def toggl2rm(toggl_token, rm_url, rm_token, date)
-  workspace = choose_workspace(toggl_token)
-  entries = toggl_entries(toggl_token, workspace, date)
-  entries.each do |entry|
-    next unless entry.hours > 0
-    issue = issue_number(entry) or next
-    puts "Adding %.2f hours for %s" % [entry.hours, issue]
-    rm_add_time(rm_url, rm_token, issue, date, entry.hours, entry.description)
+  class Entry < Struct.new(:project, :description, :ms)
+    def hours; (ms.to_f / 1000 / 60 / 60).round(2); end
+  end
+
+  def toggl_entries(workspace, date)
+    entries = []
+    1.upto(Float::INFINITY) do |page|
+      resp = toggl 'reports/api/v2/details', query: {
+        'user_agent' => 'toggl2rm',
+        'workspace_id' => workspace,
+        'since' => date,
+        'until' => date,
+        'page' => page,
+      }
+      break if resp['data'].empty?
+      entries += resp['data'].map do |entry|
+        Entry.new(entry['project'], entry['description'], entry['dur'])
+      end
+    end
+    entries
+  end
+
+  def rm_add_time(issue, hours, comments)
+    rm('/time_entries.json', {
+      'time_entry' => {
+        'issue_id' => issue.to_i,
+        'spent_on' => @date,
+        'hours' => hours,
+        'comments' => comments
+      }
+    })
+  end
+
+
+  def choose_workspace
+    # For now just pick the first one
+    toggl_workspaces.first['id']
+  end
+
+  def issue_number(entry)
+    # Look for '#12345'
+    /#(\d{1,})/.match(entry.description) ? $1.to_i : nil
+  end
+
+  def run
+    workspace = choose_workspace
+    entries = toggl_entries(workspace, @date)
+    entries.each do |entry|
+      next unless entry.hours > 0
+      issue = issue_number(entry) or next
+      puts "Adding %.2f hours for %s" % [entry.hours, issue]
+      rm_add_time(issue, entry.hours, entry.description)
+    end
   end
 end
 
@@ -115,6 +128,7 @@ Import Toggl time logs into Redmine
 Usage: toggle2rm -r URL -a TOKEN -t TOKEN [2012-01-31]
 EOM
   opts.separator ''
+  opts.on('-d', '--debug') { |v| options.debug = true }
   opts.on('-r', '--redmine-url URL',
     'Set the Redmine base URL to use') { |v| options.rm_url = v }
   opts.on('-a', '--redmine-token TOKEN',
@@ -134,4 +148,5 @@ if d = ARGV.shift
   options.date = d
 end
 
-toggl2rm(options.toggl_token, options.rm_url, options.rm_token, options.date)
+t2r = Toggl2RM.new(options.to_h)
+t2r.run
